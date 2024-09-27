@@ -243,16 +243,22 @@ async def fetch_deal_data(deal_id: str, client: AsyncClient) -> Optional[DealInf
 
 
 async def run():
-    db = await get_database()
-    base_url = "https://shc2.pipedrive.com/api/v1/deals?start=0&limit=100&get_summary=1"
-    deal_pages = get_total_pages(base_url)
+    try:
+        db = await get_database()
+        base_url = (
+            "https://shc2.pipedrive.com/api/v1/deals?start=0&limit=100&get_summary=1"
+        )
+        deal_pages = get_total_pages(base_url)
 
-    async with AsyncClient(params=TOKEN, timeout=30) as client:
-        # Create a list of tasks for all deal URLs
-        tasks = [get_deals(deal_url, client, db) for deal_url in deal_pages]
+        async with AsyncClient(params=TOKEN, timeout=30) as client:
+            # Create a list of tasks for all deal URLs
+            tasks = [get_deals(deal_url, client, db) for deal_url in deal_pages]
 
-        # Run all tasks concurrently
-        await asyncio.gather(*tasks)
+            # Run all tasks concurrently
+            await asyncio.gather(*tasks)
+    except Exception as e:
+        logging.error(f"An error occurred: {str(e)}")
+        raise  # Re-raise the exception to ensure the script exits with a non-zero status
 
 
 # Entry point
