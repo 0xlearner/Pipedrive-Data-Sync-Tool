@@ -6,6 +6,7 @@ from typing import List, Optional
 import httpx
 from httpx import AsyncClient, Response
 from asynciolimiter import Limiter
+from tenacity import retry, stop_after_attempt, wait_fixed
 
 from config.global_variables import (
     API_TOKEN,
@@ -55,32 +56,46 @@ def get_total_pages(base_url: str) -> List[str]:
 
 
 # Fetch and process deals data
+@retry(
+    stop=stop_after_attempt(3), wait=wait_fixed(300)
+)  # Retry 3 times with 5 minutes (300 seconds) delay
 async def get_deals(deal_url: str, client: AsyncClient, db):
-    await LIMITER.wait()
+    try:
+        await LIMITER.wait()
 
-    response: Response = await client.get(deal_url)
-    logging.info(f"URL: {deal_url} ==> Response: {response.status_code}")
+        response: Response = await client.get(deal_url)
+        logging.info(f"URL: {deal_url} ==> Response: {response.status_code}")
 
-    if response.status_code != 200:
-        logging.error(f"Error fetching data: {response.status_code} - {response.text}")
-        response.raise_for_status()
-
-    response_data = response.json().get("data", [])
-    if not response_data:
-        logging.error(f"No data found for {deal_url}")
-        return
-
-    for data in response_data:
-        person_info = await fetch_person_data(data, client)
-        if person_info:
-            await save_data_to_mongodb(data, person_info, client, db)
-        else:
-            logging.warning(
-                f"Skipping deal {data.get('id')} due to missing person info"
+        if response.status_code != 200:
+            logging.error(
+                f"Error fetching data: {response.status_code} - {response.text}"
             )
+            response.raise_for_status()
+
+        response_data = response.json().get("data", [])
+        if not response_data:
+            logging.error(f"No data found for {deal_url}")
+            return
+
+        for data in response_data:
+            person_info = await fetch_person_data(data, client)
+            if person_info:
+                await save_data_to_mongodb(data, person_info, client, db)
+            else:
+                logging.warning(
+                    f"Skipping deal {data.get('id')} due to missing person info"
+                )
+    except httpx.ReadTimeout:
+        logging.warning(
+            f"ReadTimeout occurred while fetching deals for {data.get('id')}. Retrying..."
+        )
+        raise  # Re-raise the exception to trigger retry
 
 
 # Fetch person-related data
+@retry(
+    stop=stop_after_attempt(3), wait=wait_fixed(300)
+)  # Retry 3 times with 5 minutes (300 seconds) delay
 async def fetch_person_data(data: dict, client: AsyncClient) -> Optional[PersonInfo]:
     person_id = data.get("person_id")
     if not person_id:
@@ -97,38 +112,43 @@ async def fetch_person_data(data: dict, client: AsyncClient) -> Optional[PersonI
 
     person_endpoint = f"https://api.pipedrive.com/v1/persons/{person_id}"
     logging.info(f"Fetching Person Data: {person_endpoint}")
+    try:
+        await LIMITER.wait()
+        person_response = await client.get(person_endpoint)
 
-    await LIMITER.wait()
-    person_response = await client.get(person_endpoint)
+        person_data = person_response.json().get("data", {})
+        if not person_data:
+            logging.error(f"Failed to fetch person info for {person_endpoint}")
+            return None
 
-    person_data = person_response.json().get("data", {})
-    if not person_data:
-        logging.error(f"Failed to fetch person info for {person_endpoint}")
-        return None
+        benefit_id = person_data.get(
+            "ca8fd59fb797a92665b29c4ee38a45524a6ad51b"
+        ) or person_data.get("a1a2bdea3ec02b42cc9baa376fd5ac79a750813b")
 
-    benefit_id = person_data.get(
-        "ca8fd59fb797a92665b29c4ee38a45524a6ad51b"
-    ) or person_data.get("a1a2bdea3ec02b42cc9baa376fd5ac79a750813b")
+        phone_number = ", ".join(
+            [
+                ph.get("value", "").replace("-", "")
+                for ph in person_data.get("phone", [])
+                if ph
+            ]
+        )
 
-    phone_number = ", ".join(
-        [
-            ph.get("value", "").replace("-", "")
-            for ph in person_data.get("phone", [])
-            if ph
-        ]
-    )
+        person_info = PersonInfo(
+            id=str(person_id),
+            benefit_id=benefit_id,
+            phone_number=phone_number,
+            email=", ".join(
+                [email.get("value", "") for email in person_data.get("email", [])]
+            ),
+            address=get_person_address(person_data),
+        )
 
-    person_info = PersonInfo(
-        id=str(person_id),
-        benefit_id=benefit_id,
-        phone_number=phone_number,
-        email=", ".join(
-            [email.get("value", "") for email in person_data.get("email", [])]
-        ),
-        address=get_person_address(person_data),
-    )
-
-    return person_info
+        return person_info
+    except httpx.ReadTimeout:
+        logging.warning(
+            f"ReadTimeout occurred while fetching person data for {person_id}. Retrying..."
+        )
+        raise  # Re-raise the exception to trigger retry
 
 
 # Extract address information
@@ -185,33 +205,41 @@ async def save_data_to_mongodb(
 
 
 # Fetch deal data
+@retry(
+    stop=stop_after_attempt(3), wait=wait_fixed(300)
+)  # Retry 3 times with 5 minutes (300 seconds) delay
 async def fetch_deal_data(deal_id: str, client: AsyncClient) -> Optional[DealInfo]:
     deal_endpoint = f"https://api.pipedrive.com/v1/deals/{deal_id}"
     logging.info(f"Fetching Deal Data: {deal_endpoint}")
+    try:
+        await LIMITER.wait()
+        deal_response = await client.get(deal_endpoint)
 
-    await LIMITER.wait()
-    deal_response = await client.get(deal_endpoint)
+        deal_data = deal_response.json().get("data", {})
+        if not deal_data:
+            logging.error(f"Failed to fetch deal info for {deal_endpoint}")
+            return None
 
-    deal_data = deal_response.json().get("data", {})
-    if not deal_data:
-        logging.error(f"Failed to fetch deal info for {deal_endpoint}")
-        return None
-
-    stage_number = deal_data.get("stage_order_nr")
-    stage_status = StageStatus.from_number(stage_number)
-    return DealInfo(
-        id=str(deal_id),
-        person_id=str(deal_data.get("person_id", {}).get("value")),
-        stage_status=stage_status,
-        status=(
-            "WON"
-            if deal_data.get("status") == "won"
-            else "LOST" if deal_data.get("status") == "lost" else ""
-        ),
-        assigned_to=deal_data.get("user_id", {}).get("name"),
-        updated_at=deal_data.get("update_time"),
-        name=deal_data.get("person_id", {}).get("name"),
-    )
+        stage_number = deal_data.get("stage_order_nr")
+        stage_status = StageStatus.from_number(stage_number)
+        return DealInfo(
+            id=str(deal_id),
+            person_id=str(deal_data.get("person_id", {}).get("value")),
+            stage_status=stage_status,
+            status=(
+                "WON"
+                if deal_data.get("status") == "won"
+                else "LOST" if deal_data.get("status") == "lost" else ""
+            ),
+            assigned_to=deal_data.get("user_id", {}).get("name"),
+            updated_at=deal_data.get("update_time"),
+            name=deal_data.get("person_id", {}).get("name"),
+        )
+    except httpx.ReadTimeout:
+        logging.warning(
+            f"ReadTimeout occurred while fetching deal data for {deal_id}. Retrying..."
+        )
+        raise  # Re-raise the exception to trigger retry
 
 
 async def run():
