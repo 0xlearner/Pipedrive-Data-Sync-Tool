@@ -1,3 +1,6 @@
 venv
 *.json
 .env
+*.sh
+__pycache__
+*.pid

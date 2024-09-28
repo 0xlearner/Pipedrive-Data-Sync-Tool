@@ -13,10 +13,11 @@ from config.global_variables import (
     PERSONS_COLLECTION,
 )
 from init_google_sheets.gs_service import initialize_services, get_sheet_id
+from config.global_variables import LOG_FILE_PATH
 
 # Logging setup
 logging.basicConfig(
-    filename="purls.log",
+    filename=LOG_FILE_PATH + "purls.log",
     filemode="w",
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] - %(message)s",

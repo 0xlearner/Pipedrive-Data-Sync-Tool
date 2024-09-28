@@ -16,10 +16,11 @@ from config.global_variables import (
 from models.data_models import StageStatus, PersonInfo, DealInfo
 from db.get_db import get_database
 from db.data_access_layer import insert_or_update_document
+from config.global_variables import LOG_FILE_PATH
 
 # Configure logging
 logging.basicConfig(
-    filename="extraction.log",
+    filename=LOG_FILE_PATH + "extraction.log",
     filemode="w",
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] - %(message)s",
