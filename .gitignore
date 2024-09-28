@@ -4,3 +4,4 @@ venv
 *.sh
 __pycache__
 *.pid
+*log
